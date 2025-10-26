@@ -381,6 +381,7 @@ class SelfPlayHandler(ABC):
 
     def __init__(self, agent_partial: partial):
         self.agent_partial = agent_partial
+        self._warned_no_model = False
     
     def get_model_from_path(self, path) -> Agent:
         if path:
@@ -390,7 +391,9 @@ class SelfPlayHandler(ABC):
                 print(f"Warning: Self-play file {path} not found. Defaulting to constant agent.")
                 opponent = ConstantAgent()
         else:
-            print("Warning: No self-play model saved. Defaulting to constant agent.")
+            if not self._warned_no_model:
+                print("Info: No self-play model saved yet. Using ConstantAgent opponent.")
+                self._warned_no_model = True
             opponent = ConstantAgent()
         opponent.get_env_info(self.env)
         return opponent
@@ -453,7 +456,7 @@ class OpponentsCfg():
         )[0]
 
         # If self-play is selected, return the trained model
-        print(f'Selected {agent_name}')
+        # print(f'Selected {agent_name}')
         if agent_name == "self_play":
             selfplay_handler: SelfPlayHandler = self.opponents[agent_name][1]
             return selfplay_handler.get_opponent()
