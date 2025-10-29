@@ -983,11 +983,16 @@ def plot_results(log_folder, title="Learning Curve"):
     """
     x, y = ts2xy(load_results(log_folder), "timesteps")
 
-    weights = np.repeat(1.0, 50) / 50
-    print(weights, y)
-    y = np.convolve(y, weights, "valid")
-    # Truncate x
-    x = x[len(x) - len(y) :]
+    # Adaptive window size: use smaller window if insufficient data
+    window_size = min(50, max(1, len(y) // 2))  # At most 50, at least half the data
+    
+    if len(y) >= window_size:
+        weights = np.repeat(1.0, window_size) / window_size
+        print(f"Smoothing with window size {window_size}")
+        # Use 'same' mode to keep the same length and preserve all timesteps
+        y = np.convolve(y, weights, "same")
+    else:
+        print(f"Insufficient data for smoothing (only {len(y)} points)")
 
     fig = plt.figure(title)
     plt.plot(x, y)
