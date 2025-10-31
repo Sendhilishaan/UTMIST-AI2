@@ -543,8 +543,7 @@ def hit_confirm_reward(env: WarehouseBrawl) -> float:
     
     This reward function encourages the agent to land attacks by:
     - Checking if the opponent was hit this frame
-    - Providing different rewards based on weapon type (Hammer > Spear > Punch)
-    - This creates an incentive to use stronger weapons for hits
+    - Providing different rewards based on if a weapon was used
     """
     player: Player = env.objects["player"]
     opponent: Player = env.objects["opponent"]
@@ -555,6 +554,26 @@ def hit_confirm_reward(env: WarehouseBrawl) -> float:
             return 1.0  
         else:  
             return 0.5 
+    return 0.0
+
+def smart_dodge_reward(env: WarehouseBrawl) -> float:
+    """Reward dodging when opponent is attacking.
+    
+    This reward encourages defensive play by:
+    - Rewarding dodging when the opponent is attacking (smart defensive move)
+    - Helps the agent learn to avoid incoming attacks
+    """
+    player: Player = env.objects["player"]
+    opponent: Player = env.objects["opponent"]
+    
+    is_dodging = isinstance(player.state, DodgeState)
+    
+    opponent_attacking = isinstance(opponent.state, AttackState)
+    
+    if is_dodging and opponent_attacking:
+        return 0.15 * env.dt
+    
+    return 0.0
 
 '''
 Add your dictionary of RewardFunctions here using RewTerms
@@ -565,6 +584,7 @@ def gen_reward_manager():
         'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=0.5),
         'damage_interaction_reward': RewTerm(func=damage_interaction_reward, weight=1.0),
         'hit_confirm_reward': RewTerm(func=hit_confirm_reward, weight=2.0),
+        'smart_dodge_reward': RewTerm(func=smart_dodge_reward, weight=0.8),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
         #'head_to_opponent': RewTerm(func=head_to_opponent, weight=0.05),
         'penalize_attack_reward': RewTerm(func=in_state_reward, weight=-0.04, params={'desired_state': AttackState}),
