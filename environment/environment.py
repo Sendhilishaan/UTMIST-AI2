@@ -625,18 +625,29 @@ class Camera():
         #new_y = self.window_height / 2 + y * self.pixels_per_tile
         return new_x, new_y
 
-    def get_frame(self, env, mode=RenderMode.RGB_ARRAY, has_hitboxes=False):
-        if not self.is_rendering:
+    def get_frame(self, env, mode=RenderMode.RGB_ARRAY, draw_ui=True, hitboxes_only=False, simplify_obstacles=False):
+        # Ensure setup runs on first render or when switching modes (RGB_ARRAY <-> PYGAME_WINDOW)
+        if (not self.is_rendering) or (getattr(self, "_mode", None) != mode):
             self._setup_render(mode)
             self.is_rendering = True
+            self._mode = mode
 
 
         # Expose the canvas for editing
         if mode == RenderMode.RGB_ARRAY:
             self.canvas = pygame.Surface((self.window_width, self.window_height))
-        #canvas = pygame.display.set_mode((self.window_width, self.window_height))
-        #self.canvas.fill((0, 0, 0))
-        self.canvas.blit(self.background_image, (0, 0))   
+        elif mode == RenderMode.PYGAME_WINDOW:
+            # For PYGAME_WINDOW, canvas is already set in _setup_render, but ensure it's accessible
+            if not hasattr(self, 'canvas') or self.canvas is None:
+                self.canvas = pygame.display.get_surface()
+        # Expose flags for object renderers immediately (so they affect background rendering)
+        self.hitboxes_only = hitboxes_only
+        self.simplify_obstacles = simplify_obstacles
+        # Use solid black background in simplified view; otherwise draw the gradient image
+        if simplify_obstacles:
+            self.canvas.fill((0, 0, 0))
+        else:
+            self.canvas.blit(self.background_image, (0, 0))   
         
 
         # Transform PyMunk objects to have (0,0) at center, and such that units are appropriate
@@ -662,14 +673,15 @@ class Camera():
         for obj_name, obj in self.objects.items():
             obj.render(self.canvas, self)
 
-        # Draw UI + Text
-        env.handle_ui(self.canvas)
+        if draw_ui:
+            # Draw UI + Text
+            env.handle_ui(self.canvas)
 
-        self.ui_handler.render(self, env)
+            self.ui_handler.render(self, env)
 
-        if hasattr(env, 'cur_action'):
-            self.key_panel_1.draw(self, env.cur_action[0])
-            self.key_panel_2.draw(self, env.cur_action[1])
+            if hasattr(env, 'cur_action'):
+                self.key_panel_1.draw(self, env.cur_action[0])
+                self.key_panel_2.draw(self, env.cur_action[1])
 
         # img = np.transpose(
         #         np.array(pygame.surfarray.pixels3d(self.canvas)), axes=(1, 0, 2)
@@ -679,9 +691,11 @@ class Camera():
         img = np.rot90(img, k=1)  
 
         if mode == RenderMode.PYGAME_WINDOW:
+            # Process pygame events to keep window responsive
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pass  # Handle quit if needed
             pygame.display.flip()
-            pygame.event.pump()
-            #pygame.display.update()
             self.clock.tick(50)
 
         return img
@@ -1448,8 +1462,15 @@ class Ground(GameObject):
 
     def render(self, canvas, camera) -> None:
         self.load_assets()
-
-        self.draw_image(canvas, self.stage_img, (self.shape.body.position.x, self.shape.body.position.y-(2.03-0.8)), self.width_ground * 3.2, camera)
+        # When simplifying obstacles (e.g., grayscale), draw a solid gray polygon instead of textured image
+        if getattr(camera, 'simplify_obstacles', False):
+            # Compute screen points for ground rectangle and fill white
+            local_vertices = self.shape.get_vertices()
+            world_vertices = [v.rotated(self.body.angle) + self.body.position for v in local_vertices]
+            screen_points = [camera.gtp(v) for v in world_vertices]
+            pygame.draw.polygon(camera.canvas, (255, 255, 255), screen_points)
+        else:
+            self.draw_image(canvas, self.stage_img, (self.shape.body.position.x, self.shape.body.position.y-(2.03-0.8)), self.width_ground * 3.2, camera)
 
       #  self.draw_outline(canvas,camera)
 
@@ -1503,7 +1524,14 @@ class Stage(GameObject):
 
     def render(self, canvas, camera) -> None:
         self.load_assets()
-        self.draw_image(canvas, self.platform_img, (self.body.position.x, self.body.position.y), self.width, camera)
+        if getattr(camera, 'simplify_obstacles', False):
+            # Draw platform as solid white rectangle
+            local_vertices = self.shape.get_vertices()
+            world_vertices = [v.rotated(self.body.angle) + self.body.position for v in local_vertices]
+            screen_points = [camera.gtp(v) for v in world_vertices]
+            pygame.draw.polygon(camera.canvas, (255, 255, 255), screen_points)
+        else:
+            self.draw_image(canvas, self.platform_img, (self.body.position.x, self.body.position.y), self.width, camera)
       #  self.draw_outline(canvas, camera)
 
     def draw_outline(self, canvas, camera):
@@ -3590,16 +3618,19 @@ class Player(GameObject):
         self.body.gravity_scale = 0 if disabled else 1
 
     def render(self, screen, camera) -> None:
-        self.state.animate_player(camera)
-
+        # Respect hitboxes_only: hide character sprites when True
+        hitboxes_only = getattr(camera, 'hitboxes_only', False)
         position = self.body.position
-        self.animation_sprite_2d.process(position)
-        self.attack_sprite.process(position)
-        flipped = self.facing == Facing.LEFT
-        self.animation_sprite_2d.render(camera, flipped=flipped)
-        self.attack_sprite.render(camera, flipped=flipped)
+        if not hitboxes_only:
+            self.state.animate_player(camera)
 
-        # Draw hurtbox
+            self.animation_sprite_2d.process(position)
+            self.attack_sprite.process(position)
+            flipped = self.facing == Facing.LEFT
+            self.animation_sprite_2d.render(camera, flipped=flipped)
+            self.attack_sprite.render(camera, flipped=flipped)
+
+        # Draw hurtbox with agent-specific colors (player 0 -> red, player 1 -> cyan)
         hurtbox_offset = Capsule.get_hitbox_offset(0, 0)
         hurtbox_offset = (hurtbox_offset[0] * int(self.facing), hurtbox_offset[1])
         hurtbox_pos = (self.body.position[0] + hurtbox_offset[0], self.body.position[1] + hurtbox_offset[1])
@@ -3609,16 +3640,11 @@ class Player(GameObject):
             self.hurtbox_collider.width / (2 * WarehouseBrawl.BRAWL_TO_UNITS),
             self.hurtbox_collider.height / (2 * WarehouseBrawl.BRAWL_TO_UNITS)
         ])
-        state_name = type(self.state).__name__
+        
+        # Color based on agent ID for easy distinction
+        hurtbox_color = (255, 0, 0) if self.agent_id == 0 else (0, 255, 255)
 
-        if state_name == 'StunState':
-            color = (67, 217, 240)  # Blue color for stunned
-        elif state_name == 'DodgeState':
-            color = (180, 180, 180)  # Grey color for dodging
-        else:
-            color = (247, 215, 5)  # Default yellow color
-
-        Capsule.draw_hithurtbox(camera, hurtbox_data, hurtbox_pos, color=color)
+        Capsule.draw_hithurtbox(camera, hurtbox_data, hurtbox_pos, color=hurtbox_color)
 
         
 
@@ -3636,30 +3662,32 @@ class Player(GameObject):
             Capsule.draw_hitbox(camera, hitbox_data, hitbox_pos)
 
         # draw circle
-        cc = (227, 138, 14) if self.agent_id == 0 else (18, 131, 201)
-        screen_pos = camera.gtp((position[0], position[1]-1))
-        pygame.draw.circle(camera.canvas, cc, screen_pos, camera.scale_gtp() * 0.25)
+        # Draw player anchor point only when not in hitboxes_only mode
+        if not hitboxes_only:
+            cc = (227, 138, 14) if self.agent_id == 0 else (18, 131, 201)
+            screen_pos = camera.gtp((position[0], position[1]-1))
+            pygame.draw.circle(camera.canvas, cc, screen_pos, camera.scale_gtp() * 0.25)
 
 
        
        
-       #  self.draw_image(camera.canvas, self.frames[self.current_frame_index], self.position, self.scale * width, camera, flipped=flipped)
-        if not isinstance(self.state, AttackState) and not issubclass(self.state.__class__, AttackState):
-            if(self.weapon in ["Hammer","Spear"]):
-                image = pygame.image.load(f"environment/assets/weapons/{self.weapon}.png")
-                width = image.get_width()
-                height = image.get_height()
-                dimensions = [width,height]
-            #  scale_cst = camera.scale_gtp()
+            #  self.draw_image(camera.canvas, self.frames[self.current_frame_index], self.position, self.scale * width, camera, flipped=flipped)
+            if not isinstance(self.state, AttackState) and not issubclass(self.state.__class__, AttackState):
+                if(self.weapon in ["Hammer","Spear"]):
+                    image = pygame.image.load(f"environment/assets/weapons/{self.weapon}.png")
+                    width = image.get_width()
+                    height = image.get_height()
+                    dimensions = [width,height]
+                #  scale_cst = camera.scale_gtp()
 
-                pos = camera.gtp(self.body.position)
-                dimensions = camera.gtp(dimensions)
+                    pos = camera.gtp(self.body.position)
+                    dimensions = camera.gtp(dimensions)
 
-                if(flipped):
-                    a = 1
-                else: 
-                    a = -1
-                GameObject.draw_image(camera.canvas, image, [self.body.position[0]-a*0.1,self.body.position[1]+0.27], 1.4, camera, flipped=flipped)
+                    if(flipped):
+                        a = 1
+                    else: 
+                        a = -1
+                    GameObject.draw_image(camera.canvas, image, [self.body.position[0]-a*0.1,self.body.position[1]+0.27], 1.4, camera, flipped=flipped)
             
     def is_on_floor(self) -> bool:
         # Check collision with either ground
@@ -4241,7 +4269,7 @@ class WeaponSpawner:
 
         
         if not pressed or not collided: return False
-        print(f'collided {w.name}, {pressed}, {collided}')
+        # print(f'collided {w.name}, {pressed}, {collided}')
         player.weapon = w.name #kaden
         player.env.weapon_equip_signal.emit(agent='player' if player.agent_id == 0 else 'opponent')#kaden
 
@@ -4522,7 +4550,7 @@ class DroppedWeaponSpawner(WeaponSpawner):
 
         if not pressed or not collided: return False
       
-        print(f'pickup {w.name}, {pressed}, {collided}')
+        # print(f'pickup {w.name}, {pressed}, {collided}')
         player.weapon = w.name #kaden
         player.env.weapon_equip_signal.emit(agent='player' if player.agent_id == 0 else 'opponent')#kaden
             # --- NEW: VFX pickup one-shot -> hidden
@@ -4598,7 +4626,7 @@ class DroppedWeaponSpawner(WeaponSpawner):
                     player.pickup_lock_until = wb.steps + 15  # ~0.25s at 60fps; tweak
 
 
-                    print(f"[FRAME {wb.steps}] Player {idx} dropped '{current_weapon}' spawner at {pos} (id {new_id}).")
+                    # print(f"[FRAME {wb.steps}] Player {idx} dropped '{current_weapon}' spawner at {pos} (id {new_id}).")
                     #kaden
                     # player loses weapon → back to Punch
                     player.weapon = "Punch"

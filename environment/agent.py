@@ -381,6 +381,7 @@ class SelfPlayHandler(ABC):
 
     def __init__(self, agent_partial: partial):
         self.agent_partial = agent_partial
+        self._warned_no_model = False
     
     def get_model_from_path(self, path) -> Agent:
         if path:
@@ -390,7 +391,9 @@ class SelfPlayHandler(ABC):
                 print(f"Warning: Self-play file {path} not found. Defaulting to constant agent.")
                 opponent = ConstantAgent()
         else:
-            print("Warning: No self-play model saved. Defaulting to constant agent.")
+            if not self._warned_no_model:
+                print("Info: No self-play model saved yet. Using ConstantAgent opponent.")
+                self._warned_no_model = True
             opponent = ConstantAgent()
         opponent.get_env_info(self.env)
         return opponent
@@ -453,7 +456,7 @@ class OpponentsCfg():
         )[0]
 
         # If self-play is selected, return the trained model
-        print(f'Selected {agent_name}')
+        # print(f'Selected {agent_name}')
         if agent_name == "self_play":
             selfplay_handler: SelfPlayHandler = self.opponents[agent_name][1]
             return selfplay_handler.get_opponent()
@@ -480,7 +483,9 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
                  opponent_cfg: OpponentsCfg=OpponentsCfg(),
                  save_handler: Optional[SaveHandler]=None,
                  render_every: int | None = None,
-                 resolution: CameraResolution=CameraResolution.LOW):
+                 resolution: CameraResolution=CameraResolution.LOW,
+                 record_every_episodes: Optional[int]=None,
+                 record_dir: Optional[str]=None):
         """
         Initializes the environment.
 
@@ -497,6 +502,12 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
         self.opponent_cfg = opponent_cfg
         self.render_every = render_every
         self.resolution = resolution
+        self.record_every_episodes = record_every_episodes
+        self.record_dir = record_dir
+
+        # Video recording state
+        self._video_writer = None
+        self._current_recording_episode = None
 
         self.games_done = 0
 
@@ -521,6 +532,13 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
         self.observation_space = self.raw_env.observation_space
         self.obs_helper = self.raw_env.obs_helper
 
+        # Default record directory under experiment path if available
+        if self.record_every_episodes is not None and self.record_every_episodes > 0:
+            if self.record_dir is None and self.save_handler is not None:
+                self.record_dir = os.path.join(self.save_handler._experiment_path(), 'videos')
+            if self.record_dir is not None:
+                os.makedirs(self.record_dir, exist_ok=True)
+
     def on_training_start(self):
         # Update SaveHandler
         if self.save_handler is not None:
@@ -539,14 +557,29 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
         }
 
         observations, rewards, terminated, truncated, info = self.raw_env.step(full_action)
-
+        self.opponent_obs = observations[1]
+     
         if self.save_handler is not None:
             self.save_handler.process()
+
+        # Write video frame if recording is active
+        if self._video_writer is not None:
+            img = self.raw_env.render()
+            img = np.rot90(img, k=-1)
+            img = np.fliplr(img)
+            self._video_writer.writeFrame(img)
+            del img
 
         if self.reward_manager is None:
             reward = rewards[0]
         else:
             reward = self.reward_manager.process(self.raw_env, 1 / 30.0)
+
+        # Close writer at episode end
+        if (terminated or truncated) and self._video_writer is not None:
+            self._video_writer.close()
+            self._video_writer = None
+            self._current_recording_episode = None
 
         return observations[0], reward, terminated, truncated, info
 
@@ -564,8 +597,29 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
 
 
         self.games_done += 1
-        #if self.games_done % self.render_every == 0:
-            #self.render_out_video()
+
+        # Initialize video writer if recording this episode
+        if self.record_every_episodes is not None and self.record_every_episodes > 0:
+            if self.games_done % self.record_every_episodes == 0 and self.record_dir is not None and self._video_writer is None:
+                # Name the file with episode count and, if available, timesteps
+                ep_str = f"ep_{self.games_done}"
+                try:
+                    steps = self.save_handler.num_timesteps if self.save_handler is not None else None
+                except Exception:
+                    steps = None
+                if steps is not None:
+                    filename = f"train_{ep_str}_{steps}_steps.mp4"
+                else:
+                    filename = f"train_{ep_str}.mp4"
+                video_path = os.path.join(self.record_dir, filename)
+                self._video_writer = skvideo.io.FFmpegWriter(video_path, outputdict={
+                    '-vcodec': 'libx264',
+                    '-pix_fmt': 'yuv420p',
+                    '-preset': 'fast',
+                    '-crf': '20',
+                    '-r': '30'
+                })
+                self._current_recording_episode = self.games_done
 
         return observations[0], info
 
@@ -983,11 +1037,16 @@ def plot_results(log_folder, title="Learning Curve"):
     """
     x, y = ts2xy(load_results(log_folder), "timesteps")
 
-    weights = np.repeat(1.0, 50) / 50
-    print(weights, y)
-    y = np.convolve(y, weights, "valid")
-    # Truncate x
-    x = x[len(x) - len(y) :]
+    # Adaptive window size: use smaller window if insufficient data
+    window_size = min(50, max(1, len(y) // 2))  # At most 50, at least half the data
+    
+    if len(y) >= window_size:
+        weights = np.repeat(1.0, window_size) / window_size
+        print(f"Smoothing with window size {window_size}")
+        # Use 'same' mode to keep the same length and preserve all timesteps
+        y = np.convolve(y, weights, "same")
+    else:
+        print(f"Insufficient data for smoothing (only {len(y)} points)")
 
     fig = plt.figure(title)
     plt.plot(x, y)
@@ -1004,13 +1063,17 @@ def train(agent: Agent,
           opponent_cfg: OpponentsCfg=OpponentsCfg(),
           resolution: CameraResolution=CameraResolution.LOW,
           train_timesteps: int=400_000,
-          train_logging: TrainLogging=TrainLogging.PLOT
+          train_logging: TrainLogging=TrainLogging.PLOT,
+          record_every_episodes: Optional[int]=None,
+          record_dir: Optional[str]=None
           ):
     # Create environment
     env = SelfPlayWarehouseBrawl(reward_manager=reward_manager,
                                  opponent_cfg=opponent_cfg,
                                  save_handler=save_handler,
-                                 resolution=resolution
+                                 resolution=resolution,
+                                 record_every_episodes=record_every_episodes,
+                                 record_dir=record_dir
                                  )
     reward_manager.subscribe_signals(env.raw_env)
     if train_logging != TrainLogging.NONE:
@@ -1028,7 +1091,9 @@ def train(agent: Agent,
         agent.learn(env, total_timesteps=train_timesteps, verbose=1)
         base_env.on_training_end()
     except KeyboardInterrupt:
-        pass
+        if save_handler is not None:
+            save_handler.agent.update_num_timesteps(save_handler.num_timesteps)
+            save_handler.save_agent()
 
     env.close()
 
