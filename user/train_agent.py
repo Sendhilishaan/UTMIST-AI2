@@ -23,6 +23,7 @@ from stable_baselines3 import A2C, PPO, SAC, DQN, DDPG, TD3, HER
 from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from custom_agent.cnn_attn_agent import CNNAttentionAgent
 
 from environment.agent import *
 from typing import Optional, Type, List, Tuple
@@ -570,6 +571,7 @@ The main function runs training. You can change configurations such as the Agent
 if __name__ == '__main__':
     # Create agent
     my_agent = CustomAgent(sb3_class=PPO, extractor=MLPExtractor)
+    # my_agent = CNNAttentionAgent(sb3_class=PPO)
 
     # Start here if you want to train from scratch. e.g:
     #my_agent = RecurrentPPOAgent()
