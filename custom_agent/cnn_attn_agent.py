@@ -17,8 +17,8 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.vec_env.vec_monitor import VecMonitor
 
 from environment.environment import CameraResolution
-from user.obs_renderer import ObservationRenderer
-from user.attack_state_tracker import AttackStateTracker
+from custom_agent.obs_renderer import ObservationRenderer
+from custom_agent.attack_state_tracker import AttackStateTracker
 from environment.agent import Agent
 
 
