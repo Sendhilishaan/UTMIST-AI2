@@ -3918,6 +3918,7 @@ class Player(GameObject):
     
     def pre_process(self) -> None:
         self.damage_taken_this_frame = 0
+        self.just_got_hit = False
 
     def process(self, action: np.ndarray) -> None:
         self.cur_action = action

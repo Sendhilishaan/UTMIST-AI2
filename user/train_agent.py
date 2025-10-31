@@ -539,6 +539,24 @@ def on_combo_reward(env: WarehouseBrawl, agent: str) -> float:
     else:
         return 1.0
 
+def hit_confirm_reward(env: WarehouseBrawl) -> float:
+    """Reward for successfully hitting the opponent.
+    
+    This reward function encourages the agent to land attacks by:
+    - Checking if the opponent was hit this frame
+    - Providing different rewards based on weapon type (Hammer > Spear > Punch)
+    - This creates an incentive to use stronger weapons for hits
+    """
+    player: Player = env.objects["player"]
+    opponent: Player = env.objects["opponent"]
+    
+    # Check if opponent just got hit this frame
+    if opponent.just_got_hit:
+        if player.weapon != "Punch":
+            return 1.0  
+        else:  
+            return 0.5 
+
 '''
 Add your dictionary of RewardFunctions here using RewTerms
 '''
@@ -547,6 +565,7 @@ def gen_reward_manager():
         #'target_height_reward': RewTerm(func=base_height_l2, weight=0.0, params={'target_height': -4, 'obj_name': 'player'}),
         'danger_zone_reward': RewTerm(func=danger_zone_reward, weight=0.5),
         'damage_interaction_reward': RewTerm(func=damage_interaction_reward, weight=1.0),
+        'hit_confirm_reward': RewTerm(func=hit_confirm_reward, weight=2.0),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
         #'head_to_opponent': RewTerm(func=head_to_opponent, weight=0.05),
         'penalize_attack_reward': RewTerm(func=in_state_reward, weight=-0.04, params={'desired_state': AttackState}),
