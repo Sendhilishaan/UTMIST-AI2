@@ -576,6 +576,36 @@ def smart_dodge_reward(env: WarehouseBrawl) -> float:
     
     return 0.0
 
+def punish_sig_whiff_reward(env: WarehouseBrawl) -> float:
+    """Penalize getting hit while performing a signature attack.
+    
+    Signature attacks are heavy attacks (NSig, DSig, SSig) that are powerful
+    but have slow startup/recovery. This penalty encourages the agent to:
+    - Use signature attacks more carefully
+    - Read the opponent before committing to slow attacks
+    - Learn proper timing for heavy attacks
+    """
+    player: Player = env.objects["player"]
+    
+    # Check if player was hit this frame
+    if not player.just_got_hit:
+        return 0.0
+    
+    # Check if player is in attack state
+    if not isinstance(player.state, AttackState):
+        return 0.0
+    
+    # Check if the current attack is a signature (heavy) move
+    if hasattr(player.state, 'move_type'):
+        move_type = player.state.move_type
+        is_signature = move_type in [MoveType.NSIG, MoveType.DSIG, MoveType.SSIG]
+        
+        # Penalize being hit during a signature attack
+        if is_signature:
+            return -1.0
+    
+    return 0.0
+
 '''
 Add your dictionary of RewardFunctions here using RewTerms
 '''
@@ -586,6 +616,7 @@ def gen_reward_manager():
         'damage_interaction_reward': RewTerm(func=damage_interaction_reward, weight=1.0),
         'hit_confirm_reward': RewTerm(func=hit_confirm_reward, weight=2.0),
         'smart_dodge_reward': RewTerm(func=smart_dodge_reward, weight=0.8),
+        #'punish_sig_whiff_reward': RewTerm(func=punish_sig_whiff_reward, weight=1.5),
         #'head_to_middle_reward': RewTerm(func=head_to_middle_reward, weight=0.01),
         #'head_to_opponent': RewTerm(func=head_to_opponent, weight=0.05),
         'penalize_attack_reward': RewTerm(func=in_state_reward, weight=-0.04, params={'desired_state': AttackState}),
