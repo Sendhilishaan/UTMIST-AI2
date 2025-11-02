@@ -3917,6 +3917,12 @@ class Player(GameObject):
         return move_type
     
     def pre_process(self) -> None:
+        """Called at the start of each frame to reset per-frame tracking variables.
+        
+        Note: This resets just_got_hit to False so it only indicates hits 
+        from the current frame. Attacks process during physics_process() and 
+        will set this flag to True if the player gets hit this frame.
+        """
         self.damage_taken_this_frame = 0
         self.just_got_hit = False
 

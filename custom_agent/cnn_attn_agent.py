@@ -164,10 +164,42 @@ class FeatureWiseAttention(BaseFeaturesExtractor):
         self.obs_renderer = ObservationRenderer(width=img_width, height=img_height, draw_info=False)
         # Attach attack state tracker for optional reuse by agents
         import os
-        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        # Get repo root path - works in both scripts and notebooks (e.g., Kaggle)
+        repo_root = None
         try:
-            self.attack_tracker = AttackStateTracker(repo_root)
+            # Try using __file__ (works in scripts, not in notebooks)
+            try:
+                current_file = os.path.abspath(__file__)
+                repo_root = os.path.abspath(os.path.join(os.path.dirname(current_file), '..'))
+            except NameError:
+                # __file__ not available (e.g., in Kaggle notebooks)
+                # Fallback: look for repo root from current working directory
+                cwd = os.getcwd()
+                # Navigate up until we find the repo root (should have 'environment' and 'custom_agent' folders)
+                current = cwd
+                while current != os.path.dirname(current):
+                    if os.path.exists(os.path.join(current, 'environment')) and \
+                       os.path.exists(os.path.join(current, 'custom_agent')):
+                        repo_root = current
+                        break
+                    current = os.path.dirname(current)
+                # If not found, try parent directory as fallback
+                if repo_root is None:
+                    repo_root = os.path.abspath(os.path.join(cwd, '..'))
+                    # Verify it has the expected structure
+                    if not (os.path.exists(os.path.join(repo_root, 'environment')) and
+                            os.path.exists(os.path.join(repo_root, 'custom_agent'))):
+                        repo_root = cwd  # Final fallback to current directory
         except Exception:
+            repo_root = os.getcwd()  # Ultimate fallback
+        
+        try:
+            if repo_root and os.path.exists(os.path.join(repo_root, 'environment')):
+                self.attack_tracker = AttackStateTracker(repo_root)
+            else:
+                self.attack_tracker = None
+        except Exception as e:
+            # Fail silently - attack tracker is optional
             self.attack_tracker = None
         
         # CNN feature extractor for images (using configurable synthetic image space)
@@ -299,7 +331,7 @@ class CNNAttentionAgent(Agent):
                 policy_kwargs=policy_kwargs,
                 verbose=1,  # Enable verbose logging
                 n_steps=512,  # Increased for faster training
-                batch_size=64,  # Increased batch size for speed
+                batch_size=32,  # Increased batch size for speed
                 n_epochs=4,  # Reduced epochs per update for speed
                 ent_coef=0.01,
                 learning_rate=3e-4,
@@ -321,6 +353,7 @@ class CNNAttentionAgent(Agent):
             del self.env
         else:
             self.model = PPO.load(self.file_path)
+            print(f"Custom CNN + Attention agent loaded from {self.file_path}!")
     
     def predict(self, obs):
         """Predict action using the custom policy."""
@@ -369,7 +402,9 @@ class CNNAttentionAgent(Agent):
                 'reward_manager': env.reward_manager,
                 'opponent_cfg': env.opponent_cfg,
                 'save_handler': getattr(env, 'save_handler', None),
-                'resolution': getattr(env, 'resolution', None)
+                'resolution': getattr(env, 'resolution', None),
+                'record_every_episodes': getattr(env, 'record_every_episodes', None),
+                'record_dir': getattr(env, 'record_dir', None)
             }
         else:
             # Fallback: return the environment itself (not ideal but works for single env)
@@ -387,7 +422,9 @@ class CNNAttentionAgent(Agent):
                 reward_manager=params['reward_manager'],
                 opponent_cfg=params['opponent_cfg'],
                 save_handler=params['save_handler'],
-                resolution=params['resolution']
+                resolution=params['resolution'],
+                record_every_episodes=params.get('record_every_episodes', None),
+                record_dir=params.get('record_dir', None)
             )
     
     def _recreate_model_for_envs(self, env, verbose=1):
