@@ -283,6 +283,8 @@ class SaveHandler():
         self.save_path = save_path
         self.name_prefix = name_prefix
         self.mode = mode
+        self.log_dir: Optional[str] = None
+        self.num_timesteps: int = 0
 
         self.steps_until_save = save_freq
         # Get model paths from exp_path, if it exists
@@ -318,6 +320,12 @@ class SaveHandler():
                     self.history.sort(key=lambda x: int(os.path.basename(x).split('_')[-2].split('.')[0]))
                     if max_saved != -1: self.history = self.history[-max_saved:]
                     print(f'Best model is {self.history[-1]}')
+                    # Initialize baseline timesteps from latest checkpoint filename
+                    try:
+                        latest_steps = int(os.path.basename(self.history[-1]).split('_')[-2].split('.')[0])
+                        self.num_timesteps = max(self.num_timesteps, latest_steps)
+                    except Exception:
+                        pass
                 else:
                     print(f'No models found in {exp_path}.')
                     raise FileNotFoundError
@@ -326,7 +334,10 @@ class SaveHandler():
 
 
     def update_info(self) -> None:
-        self.num_timesteps = self.agent.get_num_timesteps()
+        # Take the max to preserve continuity if either the loaded model
+        # or the latest checkpoint has a higher timestep count
+        agent_steps = self.agent.get_num_timesteps()
+        self.num_timesteps = max(self.num_timesteps, agent_steps)
 
     def _experiment_path(self) -> str:
         """
@@ -351,6 +362,16 @@ class SaveHandler():
         model_path = self._checkpoint_path('zip')
         self.agent.save(model_path)
         self.history.append(model_path)
+
+        # Snapshot current training logs for continuity when resuming
+        try:
+            if self.log_dir is not None:
+                src_monitor = os.path.join(self.log_dir, 'monitor.csv')
+                if os.path.exists(src_monitor):
+                    dst_monitor = os.path.join(self._experiment_path(), f"monitor_{self.num_timesteps}.csv")
+                    shutil.copyfile(src_monitor, dst_monitor)
+        except Exception as e:
+            print(f"Warning: Failed to snapshot training log: {e}")
         if self.max_saved != -1 and len(self.history) > self.max_saved:
             os.remove(self.history.pop(0))
 
@@ -562,24 +583,38 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
         if self.save_handler is not None:
             self.save_handler.process()
 
-        # Write video frame if recording is active
+        # Write video frame if recording is active (with error handling)
         if self._video_writer is not None:
-            img = self.raw_env.render()
-            img = np.rot90(img, k=-1)
-            img = np.fliplr(img)
-            self._video_writer.writeFrame(img)
-            del img
+            try:
+                img = self.raw_env.render()
+                img = np.rot90(img, k=-1)
+                img = np.fliplr(img)
+                self._video_writer.writeFrame(img)
+                del img
+            except Exception as e:
+                # If video writing fails, close writer and disable recording
+                print(f"Warning: Video writing failed: {e}. Disabling recording for this episode.")
+                try:
+                    self._video_writer.close()
+                except:
+                    pass
+                self._video_writer = None
+                self._current_recording_episode = None
 
         if self.reward_manager is None:
             reward = rewards[0]
         else:
             reward = self.reward_manager.process(self.raw_env, 1 / 30.0)
 
-        # Close writer at episode end
+        # Close writer at episode end (with error handling)
         if (terminated or truncated) and self._video_writer is not None:
-            self._video_writer.close()
-            self._video_writer = None
-            self._current_recording_episode = None
+            try:
+                self._video_writer.close()
+            except Exception as e:
+                print(f"Warning: Error closing video writer: {e}")
+            finally:
+                self._video_writer = None
+                self._current_recording_episode = None
 
         return observations[0], reward, terminated, truncated, info
 
@@ -612,14 +647,19 @@ class SelfPlayWarehouseBrawl(gymnasium.Env):
                 else:
                     filename = f"train_{ep_str}.mp4"
                 video_path = os.path.join(self.record_dir, filename)
-                self._video_writer = skvideo.io.FFmpegWriter(video_path, outputdict={
-                    '-vcodec': 'libx264',
-                    '-pix_fmt': 'yuv420p',
-                    '-preset': 'fast',
-                    '-crf': '20',
-                    '-r': '30'
-                })
-                self._current_recording_episode = self.games_done
+                try:
+                    self._video_writer = skvideo.io.FFmpegWriter(video_path, outputdict={
+                        '-vcodec': 'libx264',
+                        '-pix_fmt': 'yuv420p',
+                        '-preset': 'fast',
+                        '-crf': '20',
+                        '-r': '30'
+                    })
+                    self._current_recording_episode = self.games_done
+                    print(f"Started recording episode {self.games_done} to {video_path}")
+                except Exception as e:
+                    print(f"Warning: Failed to create video writer: {e}. Recording disabled for this episode.")
+                    self._video_writer = None
 
         return observations[0], info
 
@@ -1083,6 +1123,8 @@ def train(agent: Agent,
 
         # Logs will be saved in log_dir/monitor.csv
         env = Monitor(env, log_dir)
+        if save_handler is not None:
+            save_handler.log_dir = log_dir
 
     base_env = env.unwrapped if hasattr(env, 'unwrapped') else env
     try:

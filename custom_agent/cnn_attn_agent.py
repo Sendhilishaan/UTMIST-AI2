@@ -374,20 +374,28 @@ class CNNAttentionAgent(Agent):
         # Get the environment creation parameters from the base environment
         env_params = self._extract_env_params(base_env)
         
-        def make_env():
-            # Create a new environment instance using the same parameters
-            return self._create_env_from_params(env_params)
+        # Create factory functions for each environment with proper closure
+        def make_env_factory(env_idx):
+            """Create a factory function that captures env_idx in closure."""
+            def make_env():
+                # Only enable recording for the first environment (idx=0) to prevent memory issues
+                return self._create_env_from_params(env_params, env_idx=env_idx)
+            return make_env
         
         if use_subproc and n_envs > 1:
             # Use subprocess environments for true parallelism (not recommended in Jupyter)
             try:
-                env = SubprocVecEnv([make_env for _ in range(n_envs)])
+                env = SubprocVecEnv([make_env_factory(i) for i in range(n_envs)])
             except Exception as e:
                 print(f"SubprocVecEnv failed ({e}), falling back to DummyVecEnv")
-                env = DummyVecEnv([make_env for _ in range(n_envs)])
+                env = DummyVecEnv([make_env_factory(i) for i in range(n_envs)])
         elif n_envs > 1:
             # Use dummy vectorized environment (single process, works in Jupyter)
-            env = DummyVecEnv([make_env for _ in range(n_envs)])
+            # Only first environment (idx=0) will record videos to prevent memory issues
+            env = DummyVecEnv([make_env_factory(i) for i in range(n_envs)])
+            # Check if recording is enabled and warn user
+            if env_params.get('record_every_episodes') is not None:
+                print(f"Note: Video recording enabled. Only environment 0 (first) will record to prevent memory issues.")
         else:
             # Single environment
             env = base_env
@@ -410,21 +418,30 @@ class CNNAttentionAgent(Agent):
             # Fallback: return the environment itself (not ideal but works for single env)
             return {'env': env}
     
-    def _create_env_from_params(self, params):
+    def _create_env_from_params(self, params, env_idx=0):
         """Create a new environment instance from parameters."""
         if 'env' in params:
             # Fallback: return the same environment (not ideal for parallel)
             return params['env']
         else:
             # Create new SelfPlayWarehouseBrawl instance
+            # Only enable recording for the first environment (idx=0) when using parallel envs
             from environment.agent import SelfPlayWarehouseBrawl
+            record_every_episodes = params.get('record_every_episodes', None)
+            record_dir = params.get('record_dir', None)
+            
+            # Disable recording for non-first environments to prevent memory crashes
+            if env_idx > 0:
+                record_every_episodes = None
+                record_dir = None
+            
             return SelfPlayWarehouseBrawl(
                 reward_manager=params['reward_manager'],
                 opponent_cfg=params['opponent_cfg'],
                 save_handler=params['save_handler'],
                 resolution=params['resolution'],
-                record_every_episodes=params.get('record_every_episodes', None),
-                record_dir=params.get('record_dir', None)
+                record_every_episodes=record_every_episodes,
+                record_dir=record_dir
             )
     
     def _recreate_model_for_envs(self, env, verbose=1):
